@@ -16,52 +16,73 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y qemu-utils parted gh
 
-    - name: 获取最新 Release 并下载 renagade-rk3328 镜像
+    - name: 获取最新 Release 并下载 renegade-rk3328 镜像
       run: |
-        # 获取最新 release tag
-        LATEST_TAG=$(gh release list --repo ophub/fnnas --limit 1 --json tagName -q '.[0].tagName')
-        echo "最新 release: $LATEST_TAG"
+        # 获取最新 release tag（公开仓库，使用 --public）
+        LATEST_TAG=$(gh release list \
+          --repo ophub/fnnas \
+          --public \
+          --limit 1 \
+          --json tagName \
+          -q '.[0].tagName')
 
-        # 下载最新 release 中匹配 renegade-rk3328 的 asset
-        gh release download $LATEST_TAG --repo ophub/fnnas --pattern '*renegade-rk3328*.img.gz'
+        echo "最新 release tag: $LATEST_TAG"
+
+        # 下载最新 release 中包含 renegade-rk3328 的镜像
+        gh release download "$LATEST_TAG" \
+          --repo ophub/fnnas \
+          --public \
+          --pattern '*renegade-rk3328*.img.gz'
+
+        ls -lh
 
     - name: 解压镜像
-      run: gzip -d *.img.gz
+      run: |
+        gzip -d *.img.gz
+        ls -lh
 
     - name: 挂载镜像并修改 armbianEnv.txt
       run: |
         IMG=$(ls *.img)
         echo "镜像文件: $IMG"
 
-        # 创建 loop 设备并挂载 boot 分区
-        LOOP=$(sudo losetup -fP $IMG --show)
+        # 创建 loop 设备并自动映射分区
+        LOOP=$(sudo losetup -fP "$IMG" --show)
         echo "使用 loop 设备: $LOOP"
 
         mkdir mnt
-        sudo mount ${LOOP}p1 mnt
 
-        # 备份原始 armbianEnv.txt
+        # 挂载 boot 分区（通常是 p1）
+        sudo mount "${LOOP}p1" mnt
+
+        echo "原始 fdtfile:"
+        sudo grep '^fdtfile=' mnt/armbianEnv.txt || true
+
+        # 备份
         sudo cp mnt/armbianEnv.txt mnt/armbianEnv.txt.bak
 
-        # 替换 fdtfile
-        sudo sed -i -E 's|^fdtfile=.*$|fdtfile=rockchip/rk3328-nanopi-r2s.dtb|' mnt/armbianEnv.txt
+        # 修改 fdtfile
+        sudo sed -i -E \
+          's|^fdtfile=.*$|fdtfile=rockchip/rk3328-nanopi-r2s.dtb|' \
+          mnt/armbianEnv.txt
 
-        # 显示修改结果
-        echo "修改后的内容:"
+        echo "修改后的 fdtfile:"
         sudo grep '^fdtfile=' mnt/armbianEnv.txt || true
 
         # 卸载 & 清理
         sudo umount mnt
-        sudo losetup -d $LOOP
+        sudo losetup -d "$LOOP"
 
     - name: 重新压缩镜像
-      run: gzip -k *.img
+      run: |
+        gzip *.img
+        ls -lh
 
     - name: 创建新的 Release 并上传固件
       uses: softprops/action-gh-release@v1
       with:
         tag_name: rebuilt-${{ github.run_id }}
-        name: rebuilt-firmware-${{ github.run_id }}.img.gz
+        name: rebuilt-renegade-rk3328
         files: '*.img.gz'
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
