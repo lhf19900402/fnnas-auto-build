@@ -1,9 +1,7 @@
-name: Build FNNAS Firmware
+name: Build FNNAS rk3328-nanopi-r2s
 
 on:
-  workflow_dispatch:           # 手动触发
-  schedule:
-    - cron: '0 * * * *'       # 每小时检查一次
+  workflow_dispatch:  # 手动触发
 
 permissions:
   contents: write
@@ -13,122 +11,74 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v3
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
     - name: 安装依赖
       run: |
         sudo apt-get update
         sudo apt-get install -y qemu-utils parted gh
 
-    - name: 下载上一次处理的 last_tag.txt artifact（如果有）
-      id: download_artifact
-      run: |
-        mkdir -p artifact_last_tag
-        if gh run download-artifact last_tag --dir artifact_last_tag; then
-          echo "上一次的 last_tag artifact 下载成功"
-        else
-          echo "没有找到 last_tag artifact，第一次运行"
-        fi
-
-    - name: 初始化日志
-      run: |
-        mkdir -p artifact_logs
-        LOG_FILE="artifact_logs/check_log.txt"
-        echo "=== 检查时间: $(date) ===" >> $LOG_FILE
-        echo "LOG_FILE=$LOG_FILE" >> $GITHUB_ENV
-
-    - name: 获取最新 ophub/fnnas Release
-      id: check_release
+    - name: 获取最新 ophub/fnnas release
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        LOG_FILE=${{ env.LOG_FILE }}
+        # 获取最新 release tag
         LATEST_TAG=$(gh release list --repo ophub/fnnas --limit 1 --json tagName -q '.[0].tagName')
-        echo "最新 release tag: $LATEST_TAG" | tee -a $LOG_FILE
+        echo "最新 release tag: $LATEST_TAG"
         echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
 
-        LAST_TAG_FILE="artifact_last_tag/last_tag.txt"
-        if [ -f "$LAST_TAG_FILE" ]; then
-          LAST_TAG=$(cat "$LAST_TAG_FILE")
-        else
-          LAST_TAG=""
-        fi
-        echo "上一次处理 tag: $LAST_TAG" | tee -a $LOG_FILE
-
-        if [ "$LATEST_TAG" = "$LAST_TAG" ]; then
-          echo "已经处理过这个 release，退出 workflow" | tee -a $LOG_FILE
-          exit 0
-        fi
-        echo "检测到新 release，需要处理" | tee -a $LOG_FILE
-
-    - name: 下载固件
+    - name: 下载最新固件
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        LOG_FILE=${{ env.LOG_FILE }}
-        gh release download "${{ env.LATEST_TAG }}" \
+        gh release download "$LATEST_TAG" \
           --repo ophub/fnnas \
           --pattern '*renegade-rk3328*.img.gz'
-        IMG_FILE=$(ls *renegade-rk3328*.img.gz)
-        echo "下载文件: $IMG_FILE" | tee -a $LOG_FILE
-        echo "IMG_FILE=$IMG_FILE" >> $GITHUB_ENV
+        IMG_GZ=$(ls *renegade-rk3328*.img.gz)
+        echo "下载完成: $IMG_GZ"
+        echo "IMG_GZ=$IMG_GZ" >> $GITHUB_ENV
+        echo "IMG=${IMG_GZ%.gz}" >> $GITHUB_ENV
 
-    - name: 解压镜像
-      run: |
-        IMG_FILE="${{ env.IMG_FILE }}"
-        IMG="${IMG_FILE%.gz}"   # 去掉 .gz 后缀
-        echo "解压镜像: $IMG_FILE → $IMG" | tee -a artifact_logs/check_log.txt
-        gzip -d "$IMG_FILE"
-        echo "IMG=$IMG" >> $GITHUB_ENV   # 保存到环境变量供后续使用
+    - name: 解压固件
+      run: gzip -d "${{ env.IMG_GZ }}"
 
-    - name: 挂载镜像并修改 armbianEnv.txt
+    - name: 修改 armbianEnv.txt
       run: |
         IMG="${{ env.IMG }}"
         LOOP=$(sudo losetup -fP "$IMG" --show)
-        mkdir mnt
+        mkdir -p mnt
         sudo mount "${LOOP}p1" mnt
-        sudo cp mnt/armbianEnv.txt mnt/armbianEnv.txt.bak
         sudo sed -i -E 's|^fdtfile=.*$|fdtfile=rockchip/rk3328-nanopi-r2s.dtb|' mnt/armbianEnv.txt
         sudo umount mnt
         sudo losetup -d "$LOOP"
+        echo "armbianEnv.txt 修改完成"
 
-    - name: 重新压缩镜像
+    - name: 压缩并重命名固件
       run: |
         IMG="${{ env.IMG }}"
-        echo "重新压缩镜像: $IMG" | tee -a artifact_logs/check_log.txt
         gzip "$IMG"
+        NEW_NAME=$(echo "$IMG.gz" | sed 's/renegade-rk3328/rk3328-nanopi-r2s/')
+        mv "$IMG.gz" "$NEW_NAME"
+        echo "最终固件: $NEW_NAME"
+        echo "NEW_NAME=$NEW_NAME" >> $GITHUB_ENV
 
-    - name: 重命名固件文件
+    - name: 检查 release 是否存在，如果不存在则创建
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
-        IMG="${{ env.IMG }}"
-        NEWNAME=$(echo "$IMG.gz" | sed -E 's/renegade-rk3328/rk3328-nanopi-r2s/')
-        mv "$IMG.gz" "$NEWNAME"
-        echo "重命名完成: $NEWNAME" | tee -a artifact_logs/check_log.txt
-        echo "NEWNAME=$NEWNAME" >> $GITHUB_ENV
+        if gh release view "$LATEST_TAG" >/dev/null 2>&1; then
+          echo "Release $LATEST_TAG 已存在，将覆盖上传文件。"
+        else
+          echo "Release $LATEST_TAG 不存在，创建新的 release。"
+          gh release create "$LATEST_TAG" --title "$LATEST_TAG" --notes "自动构建固件" || true
+        fi
 
-    - name: 创建新的 Release 并上传固件
+    - name: 上传固件（覆盖现有 release 文件）
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: rebuilt-${{ github.run_id }}
-        name: ${{ env.NEWNAME }}
-        files: ${{ env.NEWNAME }}
+        tag_name: ${{ env.LATEST_TAG }}
+        name: ${{ env.NEW_NAME }}
+        files: ${{ env.NEW_NAME }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: 保存最新处理的 last_tag.txt
-      run: |
-        mkdir -p artifact_last_tag
-        echo "${{ env.LATEST_TAG }}" > artifact_last_tag/last_tag.txt
-
-    - name: 上传 last_tag.txt artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: last_tag
-        path: artifact_last_tag/last_tag.txt
-
-    - name: 上传日志 artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: check_logs
-        path: artifact_logs/check_log.txt
