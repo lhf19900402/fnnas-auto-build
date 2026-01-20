@@ -1,9 +1,10 @@
 name: Build FNNAS Firmware
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:           # 手动触发
+  schedule:
+    - cron: '0 * * * *'       # 每小时检查一次
 
-# 🔑 关键：允许创建 release / tag / 上传资产
 permissions:
   contents: write
 
@@ -20,48 +21,102 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y qemu-utils parted gh
 
-    - name: 获取最新 Release 并下载 renegade-rk3328 镜像
+    - name: 下载上一次处理的 last_tag.txt artifact（如果有）
+      id: download_artifact
+      uses: actions/download-artifact@v3
+      with:
+        name: last_tag
+        path: artifact_last_tag || true
+
+    - name: 初始化日志
+      run: |
+        mkdir -p artifact_logs
+        LOG_FILE="artifact_logs/check_log.txt"
+        # 追加日志头
+        echo "=== 检查时间: $(date) ===" >> $LOG_FILE
+        echo "LOG_FILE=$LOG_FILE" >> $GITHUB_ENV
+
+    - name: 获取最新 ophub/fnnas Release
+      id: check_release
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        LATEST_TAG=$(gh release list \
-          --repo ophub/fnnas \
-          --limit 1 \
-          --json tagName \
-          -q '.[0].tagName')
+        LOG_FILE=${{ env.LOG_FILE }}
+        LATEST_TAG=$(gh release list --repo ophub/fnnas --limit 1 --json tagName -q '.[0].tagName')
+        echo "最新 release tag: $LATEST_TAG" | tee -a $LOG_FILE
+        echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
 
-        echo "最新 release tag: $LATEST_TAG"
+        # 检查上一次处理的 tag
+        LAST_TAG_FILE="artifact_last_tag/last_tag.txt"
+        if [ -f "$LAST_TAG_FILE" ]; then
+          LAST_TAG=$(cat "$LAST_TAG_FILE")
+        else
+          LAST_TAG=""
+        fi
+        echo "上一次处理 tag: $LAST_TAG" | tee -a $LOG_FILE
 
-        gh release download "$LATEST_TAG" \
+        if [ "$LATEST_TAG" = "$LAST_TAG" ]; then
+          echo "已经处理过这个 release，退出 workflow" | tee -a $LOG_FILE
+          exit 0
+        fi
+        echo "检测到新 release，需要处理" | tee -a $LOG_FILE
+
+    - name: 下载固件
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        LOG_FILE=${{ env.LOG_FILE }}
+        gh release download "${{ env.LATEST_TAG }}" \
           --repo ophub/fnnas \
           --pattern '*renegade-rk3328*.img.gz'
+        IMG_FILE=$(ls *renegade-rk3328*.img.gz)
+        echo "下载文件: $IMG_FILE" | tee -a $LOG_FILE
+        echo "IMG_FILE=$IMG_FILE" >> $GITHUB_ENV
 
     - name: 解压镜像
-      run: gzip -d *.img.gz
+      run: gzip -d "${{ env.IMG_FILE }}"
 
     - name: 挂载镜像并修改 armbianEnv.txt
       run: |
-        IMG=$(ls *.img)
+        IMG=$(basename "${{ env.IMG_FILE }}" .gz)
         LOOP=$(sudo losetup -fP "$IMG" --show)
-
         mkdir mnt
         sudo mount "${LOOP}p1" mnt
-
-        sudo sed -i -E \
-          's|^fdtfile=.*$|fdtfile=rockchip/rk3328-nanopi-r2s.dtb|' \
-          mnt/armbianEnv.txt
-
+        sudo cp mnt/armbianEnv.txt mnt/armbianEnv.txt.bak
+        sudo sed -i -E 's|^fdtfile=.*$|fdtfile=rockchip/rk3328-nanopi-r2s.dtb|' mnt/armbianEnv.txt
         sudo umount mnt
         sudo losetup -d "$LOOP"
 
     - name: 重新压缩镜像
-      run: gzip *.img
+      run: gzip "$IMG"
+
+    - name: 重命名固件文件
+      run: |
+        NEWNAME=$(echo "$IMG.gz" | sed -E 's/renegade-rk3328/rk3328-nanopi-r2s/')
+        mv "$IMG.gz" "$NEWNAME"
+        echo "重命名完成: $NEWNAME" | tee -a ${{ env.LOG_FILE }}
+        echo "NEWNAME=$NEWNAME" >> $GITHUB_ENV
 
     - name: 创建新的 Release 并上传固件
       uses: softprops/action-gh-release@v1
       with:
         tag_name: rebuilt-${{ github.run_id }}
-        name: rebuilt-renegade-rk3328
-        files: '*.img.gz'
+        name: ${{ env.NEWNAME }}
+        files: ${{ env.NEWNAME }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: 保存最新处理的 last_tag.txt 作为 artifact
+      run: |
+        mkdir -p artifact_last_tag
+        echo "${{ env.LATEST_TAG }}" > artifact_last_tag/last_tag.txt
+      uses: actions/upload-artifact@v3
+      with:
+        name: last_tag
+        path: artifact_last_tag/last_tag.txt
+
+    - name: 上传日志 artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: check_logs
+        path: artifact_logs/check_log.txt
