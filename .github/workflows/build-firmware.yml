@@ -77,8 +77,9 @@ jobs:
     - name: 上传固件（覆盖现有 release 文件）
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: ${{ env.LATEST_TAG }}
-        name: ${{ env.NEW_NAME }}
-        files: ${{ env.NEW_NAME }}
+        tag_name: ${{ env.LATEST_TAG }}   # release tag 与 ophub/fnnas 同步
+        name: ${{ env.LATEST_TAG }}       # release title 与 ophub/fnnas 同步
+        files: ${{ env.NEW_NAME }}        # 上传修改后的固件文件
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
