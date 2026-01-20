@@ -26,7 +26,8 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: last_tag
-        path: artifact_last_tag || true
+        path: artifact_last_tag
+        if-no-files-found: ignore   # 第一次运行 artifact 不存在也不会报错
 
     - name: 初始化日志
       run: |
