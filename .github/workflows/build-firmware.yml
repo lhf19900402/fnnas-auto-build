@@ -25,7 +25,6 @@ jobs:
       id: download_artifact
       run: |
         mkdir -p artifact_last_tag
-        # 判断 artifact 是否存在
         if gh run download-artifact last_tag --dir artifact_last_tag; then
           echo "上一次的 last_tag artifact 下载成功"
         else
@@ -76,11 +75,16 @@ jobs:
         echo "IMG_FILE=$IMG_FILE" >> $GITHUB_ENV
 
     - name: 解压镜像
-      run: gzip -d "${{ env.IMG_FILE }}"
+      run: |
+        IMG_FILE="${{ env.IMG_FILE }}"
+        IMG="${IMG_FILE%.gz}"   # 去掉 .gz 后缀
+        echo "解压镜像: $IMG_FILE → $IMG" | tee -a artifact_logs/check_log.txt
+        gzip -d "$IMG_FILE"
+        echo "IMG=$IMG" >> $GITHUB_ENV   # 保存到环境变量供后续使用
 
     - name: 挂载镜像并修改 armbianEnv.txt
       run: |
-        IMG=$(basename "${{ env.IMG_FILE }}" .gz)
+        IMG="${{ env.IMG }}"
         LOOP=$(sudo losetup -fP "$IMG" --show)
         mkdir mnt
         sudo mount "${LOOP}p1" mnt
@@ -90,13 +94,17 @@ jobs:
         sudo losetup -d "$LOOP"
 
     - name: 重新压缩镜像
-      run: gzip "$IMG"
+      run: |
+        IMG="${{ env.IMG }}"
+        echo "重新压缩镜像: $IMG" | tee -a artifact_logs/check_log.txt
+        gzip "$IMG"
 
     - name: 重命名固件文件
       run: |
+        IMG="${{ env.IMG }}"
         NEWNAME=$(echo "$IMG.gz" | sed -E 's/renegade-rk3328/rk3328-nanopi-r2s/')
         mv "$IMG.gz" "$NEWNAME"
-        echo "重命名完成: $NEWNAME" | tee -a ${{ env.LOG_FILE }}
+        echo "重命名完成: $NEWNAME" | tee -a artifact_logs/check_log.txt
         echo "NEWNAME=$NEWNAME" >> $GITHUB_ENV
 
     - name: 创建新的 Release 并上传固件
