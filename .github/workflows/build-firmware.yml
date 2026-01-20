@@ -32,7 +32,6 @@ jobs:
       run: |
         mkdir -p artifact_logs
         LOG_FILE="artifact_logs/check_log.txt"
-        # 追加日志头
         echo "=== 检查时间: $(date) ===" >> $LOG_FILE
         echo "LOG_FILE=$LOG_FILE" >> $GITHUB_ENV
 
@@ -46,7 +45,6 @@ jobs:
         echo "最新 release tag: $LATEST_TAG" | tee -a $LOG_FILE
         echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
 
-        # 检查上一次处理的 tag
         LAST_TAG_FILE="artifact_last_tag/last_tag.txt"
         if [ -f "$LAST_TAG_FILE" ]; then
           LAST_TAG=$(cat "$LAST_TAG_FILE")
@@ -106,10 +104,12 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: 保存最新处理的 last_tag.txt 作为 artifact
+    - name: 保存最新处理的 last_tag.txt
       run: |
         mkdir -p artifact_last_tag
         echo "${{ env.LATEST_TAG }}" > artifact_last_tag/last_tag.txt
+
+    - name: 上传 last_tag.txt artifact
       uses: actions/upload-artifact@v3
       with:
         name: last_tag
