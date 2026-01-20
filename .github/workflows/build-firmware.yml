@@ -23,7 +23,7 @@ jobs:
 
     - name: 下载上一次处理的 last_tag.txt artifact（如果有）
       id: download_artifact
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: last_tag
         path: artifact_last_tag || true
@@ -110,13 +110,13 @@ jobs:
         echo "${{ env.LATEST_TAG }}" > artifact_last_tag/last_tag.txt
 
     - name: 上传 last_tag.txt artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: last_tag
         path: artifact_last_tag/last_tag.txt
 
     - name: 上传日志 artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: check_logs
         path: artifact_logs/check_log.txt
