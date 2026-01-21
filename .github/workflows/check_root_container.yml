@@ -10,10 +10,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Download firmware release
+      - name: Download firmware release via API
         run: |
-          # 自动获取最新 release asset
-          ASSET_URL=$(gh release view fnnas_v338 --json assets -q '.assets[].browser_download_url | select(contains(".img.gz"))')
+          echo "Fetching firmware release URL ..."
+          ASSET_URL=$(curl -s https://api.github.com/repos/lhf19900402/fnnas-auto-build-r2s/releases/tags/fnnas_v338 \
+            | grep browser_download_url \
+            | grep ".img.gz" \
+            | head -n1 \
+            | cut -d '"' -f 4)
           echo "Downloading firmware from $ASSET_URL ..."
           curl -L -o firmware.img.gz "$ASSET_URL"
 
