@@ -1,7 +1,7 @@
 name: List FNNAS dtb Files
 
 on:
-  workflow_dispatch:  # 手动触发
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -17,13 +17,12 @@ jobs:
     - name: 安装依赖
       run: |
         sudo apt-get update
-        sudo apt-get install -y qemu-utils gh
+        sudo apt-get install -y qemu-utils gh gzip zip
 
     - name: 获取最新 ophub/fnnas release
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        # 获取最新 release tag
         LATEST_TAG=$(gh release list --repo ophub/fnnas --limit 1 --json tagName -q '.[0].tagName')
         echo "最新 release tag: $LATEST_TAG"
         echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
@@ -31,6 +30,7 @@ jobs:
     - name: 下载最新固件
       env:
         GH_TOKEN: ${{ github.token }}
+        LATEST_TAG: ${{ env.LATEST_TAG }}
       run: |
         gh release download "$LATEST_TAG" \
           --repo ophub/fnnas \
@@ -44,14 +44,42 @@ jobs:
         IMG_GZ: ${{ env.IMG_GZ }}
       run: |
         IMG="${IMG_GZ%.gz}"
-        gzip -d "$IMG_GZ"
+        gzip -dk "$IMG_GZ"
 
         sudo mkdir -p /mnt/boot
         LOOP=$(sudo losetup -fP --show "$IMG")
+        sudo partprobe "$LOOP"
         sudo mount "${LOOP}p1" /mnt/boot
 
         echo "===== /dtb/rockchip 下的文件 ====="
-        find /mnt/boot/dtb/rockchip -type f -exec basename {} \;
+        find /mnt/boot/dtb/rockchip -type f -exec basename {} \; | sort
 
         sudo umount /mnt/boot
         sudo losetup -d "$LOOP"
+
+    - name: 打包 boot 分区并上传 artifact
+      env:
+        IMG_GZ: ${{ env.IMG_GZ }}
+      run: |
+        IMG="${IMG_GZ%.gz}"
+
+        sudo mkdir -p /mnt/boot
+        LOOP=$(sudo losetup -fP --show "$IMG")
+        sudo partprobe "$LOOP"
+        sudo mount "${LOOP}p1" /mnt/boot
+
+        ARTIFACT_NAME="boot_partition.zip"
+        sudo zip -r "$ARTIFACT_NAME" /mnt/boot
+
+        sudo cp "$ARTIFACT_NAME" .
+        sudo chown $USER:$USER "$ARTIFACT_NAME"
+        echo "ARTIFACT=$ARTIFACT_NAME" >> $GITHUB_ENV
+
+        sudo umount /mnt/boot
+        sudo losetup -d "$LOOP"
+
+    - name: 上传 boot 分区 artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: boot_partition
+        path: ${{ env.ARTIFACT }}
