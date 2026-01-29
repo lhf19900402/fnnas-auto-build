@@ -23,8 +23,8 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        # 获取最新 release tag
-        LATEST_TAG=$(gh release list --repo ophub/fnnas --limit 1 --json tagName -q '.[0].tagName')
+        # 获取最新 release tag（仅tag名包含rockchip）
+        LATEST_TAG=$(gh release list --repo ophub/fnnas --json tagName -q '.[] | select(.tagName | contains("rockchip")) | .tagName' | head -n 1)
         echo "最新 release tag: $LATEST_TAG"
         echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
 
