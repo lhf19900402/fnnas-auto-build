@@ -13,98 +13,109 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y fdisk xz-utils grep sed
+          echo "✅ 基础依赖库安装完成"
 
       - name: Get Latest Release Info and Download
         id: get_info
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "🔍 正在搜索 ophub/fnnas 仓库中 fnnas_base_image 的最新附件..."
+          REPO="ophub/fnnas"
+          TAG="fnnas_base_image"
           
-          # 获取 release 详情，并过滤出最新的 .img.xz 文件名
-          # 假设文件名格式如: fnnas-official-arm64-image_allwinner_317.img.xz
-          LATEST_ASSET=$(gh release view fnnas_base_image -R ophub/fnnas --json assets \
+          echo "🔍 正在搜索最新附件..."
+          # 获取最新 .img.xz 附件名
+          LATEST_ASSET=$(gh release view "$TAG" -R "$REPO" --json assets \
             -q '.assets[] | select(.name | endswith(".img.xz")) | .name' | sort -V | tail -n 1)
           
           if [ -z "$LATEST_ASSET" ]; then
-            echo "❌ 错误：在 ophub/fnnas 的 fnnas_base_image 中没找到 .img.xz 文件"
+            echo "❌ 错误：未找到 .img.xz 附件"
             exit 1
           fi
-          echo "✅ 发现最新附件: $LATEST_ASSET"
-
-          # 提取版本号 (截取最后一个下划线到第一个点之间的数字)
-          # 例如从 ...allwinner_317.img.xz 提取出 317
-          VERSION=$(echo "$LATEST_ASSET" | grep -oP '(?<=_)\d+(?=\.img\.xz)')
-          if [ -z "$VERSION" ]; then
-             echo "⚠️ 无法从文件名提取版本号，使用 timestamp 代替"
-             VERSION=$(date +%s)
-          fi
-          echo "✅ 提取版本号: $VERSION"
+          
+          # 提取版本号 (例如从 allwinner_317.img.xz 提取 317)
+          VERSION=$(echo "$LATEST_ASSET" | grep -oP '(?<=_)\d+(?=\.img\.xz)' || echo "unknown")
+          
           echo "VERSION=$VERSION" >> $GITHUB_ENV
-
-          # 下载文件
-          echo "📥 正在下载附件..."
-          gh release download fnnas_base_image -R ophub/fnnas -p "$LATEST_ASSET" --clobber
           echo "SOURCE_FILE=$LATEST_ASSET" >> $GITHUB_ENV
+          
+          echo "📥 开始下载: $LATEST_ASSET"
+          gh release download "$TAG" -R "$REPO" -p "$LATEST_ASSET" --clobber
 
       - name: Decompress and Patch Image
         run: |
-          echo "📦 正在解压镜像: ${{ env.SOURCE_FILE }} ..."
-          unxz -c "${{ env.SOURCE_FILE }}" > source.img || { echo "❌ 解压失败"; exit 1; }
+          echo "📦 正在解压镜像 (这可能需要 1-2 分钟)..."
+          unxz -v -c "${{ env.SOURCE_FILE }}" > source.img
+          rm "${{ env.SOURCE_FILE }}" # 释放空间
 
-          echo "🛠️ 正在设置 Loop 设备..."
+          echo "🛠️ 正在关联 Loop 设备..."
           sudo losetup -D
           LOOP_DEV=$(sudo losetup -Pf --show source.img)
-          if [ -z "$LOOP_DEV" ]; then echo "❌ 关联 Loop 设备失败"; exit 1; fi
-          echo "✅ 关联到: $LOOP_DEV"
-
+          
           mkdir -p mnt_p1 mnt_p2
 
-          # 1. 提取内核 (p1)
-          echo "📂 正在挂载分区 1 并提取内核..."
-          sudo mount "${LOOP_DEV}p1" mnt_p1 || { echo "❌ 挂载 p1 失败"; exit 1; }
-          
+          # 1. 挂载 p1 提取原始内核
+          echo "📂 提取内核文件..."
+          sudo mount "${LOOP_DEV}p1" mnt_p1
           KERNEL_PATH=$(sudo find mnt_p1 -name "vmlinuz-*" ! -name "*.old" | sort -V | tail -n 1)
           INITRD_PATH=$(sudo find mnt_p1 -name "initrd.img-*" ! -name "*.old" | sort -V | tail -n 1)
           
-          if [ -n "$KERNEL_PATH" ]; then
-            RAW_KERNEL=$(basename "$KERNEL_PATH")
-            RAW_INITRD=$(basename "$INITRD_PATH")
-            cp "$KERNEL_PATH" ./"$RAW_KERNEL"
-            cp "$INITRD_PATH" ./"$RAW_INITRD"
-            echo "RAW_KERNEL=$RAW_KERNEL" >> $GITHUB_ENV
-            echo "RAW_INITRD=$RAW_INITRD" >> $GITHUB_ENV
-            echo "✅ 成功提取内核: $RAW_KERNEL"
-          else
-            echo "❌ 错误：在 p1 未找到内核文件"; exit 1
-          fi
+          RAW_KERNEL=$(basename "$KERNEL_PATH")
+          RAW_INITRD=$(basename "$INITRD_PATH")
+          cp "$KERNEL_PATH" ./"$RAW_KERNEL"
+          cp "$INITRD_PATH" ./"$RAW_INITRD"
+          
+          echo "RAW_KERNEL=$RAW_KERNEL" >> $GITHUB_ENV
+          echo "RAW_INITRD=$RAW_INITRD" >> $GITHUB_ENV
           sudo umount mnt_p1
 
-          # 2. 修改系统配置 (p2)
-          echo "🛠️ 正在挂载分区 2 修正系统配置..."
-          sudo mount "${LOOP_DEV}p2" mnt_p2 || { echo "❌ 挂载 p2 失败"; exit 1; }
-          
-          # 修正 fstab
+          # 2. 挂载 p2 修改配置
+          echo "✍️ 修改系统配置 (fstab & services)..."
+          sudo mount "${LOOP_DEV}p2" mnt_p2
           sudo sed -i 's/^.*\/boot/#&/' mnt_p2/etc/fstab
           sudo sed -i 's/^\/dev\/mmcblk0p2/\/dev\/vdb2/' mnt_p2/etc/fstab
-          
-          # 禁用服务
           sudo rm -f mnt_p2/etc/systemd/system/multi-user.target.wants/trim_miniscreen.service
           sudo rm -f mnt_p2/etc/systemd/system/multi-user.target.wants/trim_wayland.service
           
-          echo "✅ fstab 和服务修正完成"
           sudo umount mnt_p2
           sudo losetup -D
+          echo "✅ 镜像手术完成"
+
+      - name: Create README for UTM
+        run: |
+          echo "📝 生成使用说明..."
+          cat << EOF > README.md
+          # fNOS UTM 虚拟机使用说明 (v${VERSION})
+
+          此附件由 GitHub Actions 自动生成，专门用于 UTM 虚拟机的一键启动。
+
+          ## 📄 文件清单
+          1. **镜像文件**: fn_utm_${VERSION}.img.xz (使用前请先解压)
+          2. **内核文件**: ${RAW_KERNEL}
+          3. **Initrd文件**: ${RAW_INITRD}
+
+          ## 🚀 UTM 配置指南
+          1. **驱动器 (Drive)**: 导入解压后的镜像，接口选择 **VirtIO**。
+          2. **高级 (Advanced)**:
+             - 勾选 **"使用本地内核/initrd"**。
+             - **External Kernel**: 选择 \`${RAW_KERNEL}\`。
+             - **Initrd**: 选择 \`${RAW_INITRD}\`。
+          3. **启动参数 (Arguments)**:
+             - 在 UTM 参数框中填入以下带引号的完整内容：
+               \`\`\`text
+               "root=/dev/vdb2 rw console=tty0 console=ttyAMA0 earlycon"
+               \`\`\`
+
+          ---
+          *Build Date: $(date)*
+          EOF
 
       - name: Compress Final Image
         run: |
-          # 注意：在 run 块里，直接用 $VERSION 引用之前存入 GITHUB_ENV 的变量
           FINAL_NAME="fn_utm_${VERSION}.img.xz"
-          echo "🗜️ 正在重新打包为 $FINAL_NAME ..."
+          echo "🗜️ 重新打包镜像 (xz -T0)..."
           xz -z -T0 -v -c source.img > "$FINAL_NAME"
-          # 必须存入 GITHUB_ENV，下个 Step 才能看到
           echo "FINAL_IMG_NAME=$FINAL_NAME" >> $GITHUB_ENV
-          echo "✅ 打包完成"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -114,3 +125,4 @@ jobs:
             ${{ env.FINAL_IMG_NAME }}
             ${{ env.RAW_KERNEL }}
             ${{ env.RAW_INITRD }}
+            README.md
