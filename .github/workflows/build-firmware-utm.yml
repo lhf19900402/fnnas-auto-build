@@ -15,7 +15,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y fdisk xz-utils grep sed
+          sudo apt-get install -y fdisk xz-utils grep sed tar
           echo "✅ 基础依赖库安装完成"
 
       - name: Get Latest Release Info and Download
@@ -26,8 +26,7 @@ jobs:
           REPO="ophub/fnnas"
           TAG="fnnas_base_image"
           
-          echo "🔍 正在从 $REPO 搜索最新附件..."
-          # 获取最新 .img.xz 附件名
+          echo "🔍 正在搜索最新附件..."
           LATEST_ASSET=$(gh release view "$TAG" -R "$REPO" --json assets \
             -q '.assets[] | select(.name | endswith(".img.xz")) | .name' | sort -V | tail -n 1)
           
@@ -36,7 +35,6 @@ jobs:
             exit 1
           fi
           
-          # 提取版本号 (从文件名下划线后截取数字)
           VERSION=$(echo "$LATEST_ASSET" | grep -oP '(?<=_)\d+(?=\.img\.xz)' || echo "unknown")
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "SOURCE_FILE=$LATEST_ASSET" >> $GITHUB_ENV
@@ -48,76 +46,69 @@ jobs:
         run: |
           echo "📦 正在解压镜像..."
           unxz -v -c "${{ env.SOURCE_FILE }}" > source.img
-          rm "${{ env.SOURCE_FILE }}" # 释放空间防止溢出
+          rm "${{ env.SOURCE_FILE }}"
 
-          echo "🛠️ 正在关联 Loop 设备..."
           sudo losetup -D
           LOOP_DEV=$(sudo losetup -Pf --show source.img)
           mkdir -p mnt_p1 mnt_p2
 
-          # 1. 挂载 p1 提取原始内核文件
-          echo "📂 提取内核组件..."
+          # 1. 提取内核组件
           sudo mount "${LOOP_DEV}p1" mnt_p1
           KERNEL_PATH=$(sudo find mnt_p1 -name "vmlinuz-*" ! -name "*.old" | sort -V | tail -n 1)
           INITRD_PATH=$(sudo find mnt_p1 -name "initrd.img-*" ! -name "*.old" | sort -V | tail -n 1)
-          
           RAW_KERNEL=$(basename "$KERNEL_PATH")
           RAW_INITRD=$(basename "$INITRD_PATH")
           cp "$KERNEL_PATH" ./"$RAW_KERNEL"
           cp "$INITRD_PATH" ./"$RAW_INITRD"
-          
           echo "RAW_KERNEL=$RAW_KERNEL" >> $GITHUB_ENV
           echo "RAW_INITRD=$RAW_INITRD" >> $GITHUB_ENV
           sudo umount mnt_p1
 
-          # 2. 挂载 p2 修正系统配置
-          echo "✍️ 修正 fstab 和禁用冲突服务..."
+          # 2. 修正系统配置
           sudo mount "${LOOP_DEV}p2" mnt_p2
           sudo sed -i 's/^.*\/boot/#&/' mnt_p2/etc/fstab
           sudo sed -i 's/^\/dev\/mmcblk0p2/\/dev\/vdb2/' mnt_p2/etc/fstab
           sudo rm -f mnt_p2/etc/systemd/system/multi-user.target.wants/trim_miniscreen.service
           sudo rm -f mnt_p2/etc/systemd/system/multi-user.target.wants/trim_wayland.service
-          
           sudo umount mnt_p2
           sudo losetup -D
           echo "✅ 镜像修改完成"
 
       - name: Create README for UTM
         run: |
-          echo "📝 生成使用说明..."
           cat << EOF > README.md
           # fNOS UTM 虚拟机使用说明 (v${{ env.VERSION }})
 
-          此资源由 GitHub Actions 自动构建，适配 UTM 的 ARM64 虚拟化环境。
-
-          ## 📄 文件清单
-          1. **镜像文件**: \`fn_utm_${{ env.VERSION }}.img.xz\` (使用前请先解压)
-          2. **内核文件**: \`${{ env.RAW_KERNEL }}\`
-          3. **Initrd文件**: \`${{ env.RAW_INITRD }}\`
-
           ## 🚀 UTM 配置关键点
-          1. **驱动器**: 导入镜像，接口选 **VirtIO**。
+          1. **驱动器**: 导入镜像 \`fn_utm_${{ env.VERSION }}.img\`，接口选 **VirtIO**。
           2. **系统**: **取消勾选** "UEFI Boot"。
           3. **高级**:
              - 勾选 **"使用本地内核/initrd"**。
              - **External Kernel**: 选择 \`${{ env.RAW_KERNEL }}\`。
              - **Initrd**: 选择 \`${{ env.RAW_INITRD }}\`。
           4. **启动参数 (Arguments)**:
-             请完整复制以下带引号的内容：
              \`\`\`text
              "root=/dev/vdb2 rw console=tty0 console=ttyAMA0 earlycon"
              \`\`\`
-
-          ---
-          *Build Date: $(date)*
           EOF
 
-      - name: Compress Final Image
+      - name: Final Packaging (Tar + XZ)
         run: |
-          FINAL_NAME="fn_utm_${{ env.VERSION }}.img.xz"
-          echo "🗜️ 正在重新打包镜像 (xz -T0)..."
-          xz -z -T0 -v -c source.img > "$FINAL_NAME"
-          echo "FINAL_IMG_NAME=$FINAL_NAME" >> $GITHUB_ENV
+          # 创建一个以版本号命名的目录
+          PKG_DIR="fn_utm_${{ env.VERSION }}"
+          mkdir -p "$PKG_DIR"
+          
+          # 移动所有产物到目录中
+          mv source.img "$PKG_DIR/fn_utm_${{ env.VERSION }}.img"
+          mv "${{ env.RAW_KERNEL }}" "$PKG_DIR/"
+          mv "${{ env.RAW_INITRD }}" "$PKG_DIR/"
+          mv README.md "$PKG_DIR/"
+          
+          # 打包并压缩
+          echo "🗜️ 正在将所有文件打包压缩为 ${PKG_DIR}.tar.xz ..."
+          tar -cvf - "$PKG_DIR" | xz -z -T0 -v > "${PKG_DIR}.tar.xz"
+          
+          echo "FINAL_PKG_NAME=${PKG_DIR}.tar.xz" >> $GITHUB_ENV
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
@@ -126,15 +117,10 @@ jobs:
           name: fnnas_utm
           body: |
             ## 🚀 构建摘要
-            - **基于版本**: ophub/fnnas v${{ env.VERSION }}
-            - **内核文件名**: `${{ env.RAW_KERNEL }}`
-            - **启动参数**: `"root=/dev/vdb2 rw console=tty0 console=ttyAMA0 earlycon"`
-            - **构建状态**: 成功
-          files: |
-            ${{ env.FINAL_IMG_NAME }}
-            ${{ env.RAW_KERNEL }}
-            ${{ env.RAW_INITRD }}
-            README.md
+            - **版本**: v${{ env.VERSION }}
+            - **说明**: 此压缩包包含修改后的镜像、内核、initrd 和 README。
+            - **参数**: `"root=/dev/vdb2 rw console=tty0 console=ttyAMA0 earlycon"`
+          files: ${{ env.FINAL_PKG_NAME }}
           overwrite_files: true
           make_latest: true
         env:
