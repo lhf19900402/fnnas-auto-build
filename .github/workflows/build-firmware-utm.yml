@@ -120,7 +120,7 @@ jobs:
             ## 🚀 构建摘要
             - **版本**: v${{ env.VERSION }}
             - **说明**: 此压缩包包含修改后的镜像、内核、initrd 和 README。
-            - **参数**: `"root=/dev/vdb2 rw console=tty0 console=ttyAMA0 earlycon"`
+            - **参数**: `-append "root=/dev/vdb2 rw console=tty0 console=ttyAMA0 earlycon"`
           files: ${{ env.FINAL_PKG_NAME }}
           overwrite_files: true
           make_latest: true
