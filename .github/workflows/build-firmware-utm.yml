@@ -27,7 +27,6 @@ jobs:
           TAG="fnnas_base_image"
           
           echo "🔍 正在搜索最新附件..."
-          # 按数字版本号排序，确保获取全场最高版本
           LATEST_ASSET=$(gh release view "$TAG" -R "$REPO" --json assets \
             -q '.assets[] | select(.name | endswith(".img.xz")) | .name' | \
             sed -E 's/.*_([0-9]+)\.img\.xz/\1 &/' | \
@@ -54,18 +53,20 @@ jobs:
           unxz -v -c "${{ env.SOURCE_FILE }}" > source.img
           rm "${{ env.SOURCE_FILE }}"
 
+          # 启动 Loop 设备并扫描分区
           sudo losetup -D
           LOOP_DEV=$(sudo losetup -Pf --show source.img)
-          mkdir -p mnt_p1 mnt_p2
+          mkdir -p mnt_p1 mnt_new
 
-          # 1. 提取内核组件
-          sudo mount "${LOOP_DEV}p1" mnt_p1
+          # 1. 提取内核组件 (保持动态命名逻辑)
           echo "📂 正在探测原始内核文件..."
+          sudo mount -o ro "${LOOP_DEV}p1" mnt_p1
           KERNEL_PATH=$(sudo find mnt_p1 -name "vmlinuz-*" ! -name "*.old" | sort -V | tail -n 1)
           INITRD_PATH=$(sudo find mnt_p1 -name "initrd.img-*" ! -name "*.old" | sort -V | tail -n 1)
           
           RAW_KERNEL=$(basename "$KERNEL_PATH")
           RAW_INITRD=$(basename "$INITRD_PATH")
+          
           cp "$KERNEL_PATH" ./"$RAW_KERNEL"
           cp "$INITRD_PATH" ./"$RAW_INITRD"
           
@@ -73,25 +74,31 @@ jobs:
           echo "RAW_INITRD=$RAW_INITRD" >> $GITHUB_ENV
           sudo umount mnt_p1
 
-          # 2. 修正系统配置并提取极致精简 Rootfs
-          sudo mount "${LOOP_DEV}p2" mnt_p2
-          
-          # 修改 fstab：禁用 boot 挂载，并将根目录设为 /dev/vdb
-          sudo sed -i 's/^.*\/boot/#&/' mnt_p2/etc/fstab
-          sudo sed -i 's/^\/dev\/mmcblk0p2/\/dev\/vda/' mnt_p2/etc/fstab
-          
-          # 移除物理开发板冲突服务
-          sudo rm -f mnt_p2/etc/systemd/system/multi-user.target.wants/trim_miniscreen.service
-          sudo rm -f mnt_p2/etc/systemd/system/multi-user.target.wants/trim_wayland.service
-          
-          echo "💾 正在提取纯净系统分区为 rootfs.img..."
-          # 将修改好的 P2 导出为 rootfs.img
+          # 2. 提取 P2 分区 (脚本 1 核心逻辑：Block-to-Block 拷贝)
+          echo "💾 正在克隆 P2 分区到 rootfs.img..."
           sudo dd if="${LOOP_DEV}p2" of=rootfs.img bs=1M status=none
           
-          sudo umount mnt_p2
-          sudo losetup -D
+          # 卸载原 loop 设备，释放资源
+          sudo losetup -d $LOOP_DEV
+
+          # 3. 挂载新生成的 rootfs.img 进行适配修正 (脚本 1 核心逻辑)
+          echo "🛠️ 正在应用虚拟机适配修正..."
+          sudo mount rootfs.img mnt_new
+
+          # 修正 fstab：禁用 boot 分区挂载，并将根目录设为 vda
+          sudo sed -i 's/^.*\/boot/#&/' mnt_new/etc/fstab
+          sudo sed -i 's/^\/dev\/mmcblk0p2/\/dev\/vda/' mnt_new/etc/fstab
+          
+          # 移除物理硬件冲突服务
+          sudo rm -f mnt_new/etc/systemd/system/multi-user.target.wants/trim_miniscreen.service
+          sudo rm -f mnt_new/etc/systemd/system/multi-user.target.wants/trim_wayland.service
+
+          # 强制刷新缓存并卸载
+          sync
+          sudo umount mnt_new
+          
           rm source.img
-          echo "✅ 极致精简 rootfs.img 提取完成"
+          echo "✅ 修复完成，根分区已适配为 /dev/vda"
 
       - name: Create README for UTM
         run: |
@@ -99,33 +106,30 @@ jobs:
           # fNOS UTM 虚拟机使用说明 (v${{ env.VERSION }})
 
           ## 🚀 UTM 配置关键点
-          1. **驱动器**: 导入镜像 \`rootfs.img\`，接口选 **VirtIO**。
+          1. **驱动器**: 导入 \`rootfs.img\`，接口选择 **VirtIO**。
           2. **高级**:
              - 勾选 **"使用本地内核/initrd"**。
              - **External Kernel**: 选择 \`${{ env.RAW_KERNEL }}\`。
              - **Initrd**: 选择 \`${{ env.RAW_INITRD }}\`。
           3. **启动参数 (Arguments)**:
-             请在 QEMU 参数 最后一栏填入以下内容（包含引号）：
+             请在 QEMU 参数最后一栏填入（包含引号）：
              \`\`\`text
              -append
-             "root=/dev/vdb rw console=tty0 console=ttyAMA0 earlycon"
+             "root=/dev/vda rw console=tty0 console=ttyAMA0 earlycon"
              \`\`\`
           EOF
 
       - name: Final Packaging (Tar + XZ)
         run: |
-          # 创建一个以版本号命名的目录
           PKG_DIR="fn_utm_${{ env.VERSION }}"
           mkdir -p "$PKG_DIR"
           
-          # 移动所有产物到目录中，镜像文件现在叫 rootfs.img
           mv rootfs.img "$PKG_DIR/"
           mv "${{ env.RAW_KERNEL }}" "$PKG_DIR/"
           mv "${{ env.RAW_INITRD }}" "$PKG_DIR/"
           mv README.md "$PKG_DIR/"
           
-          # 打包并压缩
-          echo "🗜️ 正在将所有文件打包压缩为 ${PKG_DIR}.tar.xz ..."
+          echo "🗜️ 正在打包压缩..."
           tar -cvf - "$PKG_DIR" | xz -z -T0 -v > "${PKG_DIR}.tar.xz"
           
           echo "FINAL_PKG_NAME=${PKG_DIR}.tar.xz" >> $GITHUB_ENV
@@ -134,9 +138,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: fnnas_utm
-          name: fnnas_utm
+          name: fnnas_utm_${{ env.VERSION }}
           body: |
-            fnOS UTM虚拟机ARM版
+            fnOS UTM 虚拟机 ARM 版 (基于官方最新镜像修复)
           files: ${{ env.FINAL_PKG_NAME }}
           overwrite_files: true
           make_latest: true
