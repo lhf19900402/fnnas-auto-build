@@ -1,4 +1,4 @@
-name: Patch fNOS Image for UTM (Standard Kernel Optimized)
+name: Patch fNOS Image for UTM (Standard Kernel)
 on:
   workflow_dispatch:
 
@@ -61,17 +61,18 @@ jobs:
           sudo mount --bind /sys mnt_new/sys
           sudo cp /etc/resolv.conf mnt_new/etc/resolv.conf
 
-          # 4. 在线安装标准内核
+          # 4. 执行 Chroot 安装标准内核 (强行解开包锁定)
           echo "🌐 正在在线安装 Debian 标准内核..."
           sudo chroot mnt_new /bin/bash -c "
             apt-get update
-            apt-get install -y linux-image-arm64
+            apt-get install -y --allow-change-held-packages linux-image-arm64
             apt-get clean
           "
 
-          # 5. 提取产物
-          cp mnt_new/boot/vmlinuz-*-arm64 ./vmlinuz-standard
-          cp mnt_new/boot/initrd.img-*-arm64 ./initrd-standard
+          # 5. 提取产物 (改用更稳健的拷贝方式)
+          ls -lh mnt_new/boot/ # 打印一下路径方便调试
+          cp $(ls mnt_new/boot/vmlinuz-*-arm64 | head -n 1) ./vmlinuz-standard
+          cp $(ls mnt_new/boot/initrd.img-*-arm64 | head -n 1) ./initrd-standard
 
           # 6. 应用虚拟机适配修正 (采用你验证过的逻辑)
           echo "🛠️ 应用虚拟机适配修正..."
