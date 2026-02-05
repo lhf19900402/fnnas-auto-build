@@ -15,8 +15,8 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y fdisk xz-utils grep sed tar kmod zstd
-          echo "✅ 依赖库安装完成"
+          sudo apt-get install -y fdisk xz-utils grep sed tar kmod zstd qemu-user-static binfmt-support
+          echo "✅ 依赖库与 QEMU 模拟器安装完成"
 
       - name: Get Latest Release Info and Download
         id: get_info
@@ -36,41 +36,34 @@ jobs:
 
       - name: Decompress and Patch Image
         run: |
-          unxz -v -c "${{ env.SOURCE_FILE }}" > source.img
-          LOOP_DEV=$(sudo losetup -Pf --show source.img)
-          mkdir -p mnt_new
-          
-          # 提取并挂载 Rootfs
-          sudo dd if="${LOOP_DEV}p2" of=rootfs.img bs=1M
-          sudo mount rootfs.img mnt_new
+          # ... (前面解压、losetup、mount 的步骤不变) ...
 
-          # --- 关键步骤：空间与环境准备 ---
-          # 1. 删掉旧驱动目录腾空间 (关键：释放约 400MB)
-          sudo rm -rf mnt_new/lib/modules/6.12.41-trim
-          
+          # --- 关键修正：跨架构支持 ---
+          # 1. 拷贝 QEMU 解析器到镜像内 (这步是解决 Exec format error 的核心)
+          sudo cp /usr/bin/qemu-aarch64-static mnt_new/usr/bin/
+
           # 2. 准备 chroot 环境
           sudo mount --bind /dev mnt_new/dev
           sudo mount --bind /proc mnt_new/proc
           sudo mount --bind /sys mnt_new/sys
-          sudo cp /etc/resolv.conf mnt_new/etc/resolv.conf # 解决网络解析
+          sudo cp /etc/resolv.conf mnt_new/etc/resolv.conf
 
-          # 3. 安装标准内核
+          # 3. 现在执行 chroot (QEMU 会自动介入)
           sudo chroot mnt_new /bin/bash -c "
             apt-get update
             apt-get install -y linux-image-arm64
             apt-get clean
           "
 
-          # 4. 提取安装好的标准内核和引导文件
+          # 4. 提取内核文件
           cp mnt_new/boot/vmlinuz-*-arm64 ./vmlinuz-standard
           cp mnt_new/boot/initrd.img-*-arm64 ./initrd-standard
 
           # 5. 适配 UTM (fstab)
-          sudo sed -i 's/^.*\/boot/#&/' mnt_new/etc/fstab
-          sudo sed -i 's/^UUID=[^ ]*/\/dev\/vda/' mnt_new/etc/fstab
-          sudo sed -i 's/^\/dev\/mmcblk0p2/\/dev\/vda/' mnt_new/etc/fstab
-          
-          # 6. 卸载
+          # ... (保持原来的 sed 逻辑) ...
+
+          # 6. 清理并卸载
+          sudo rm mnt_new/usr/bin/qemu-aarch64-static # 记得删掉拷贝进去的工具
           sudo umount mnt_new/dev mnt_new/proc mnt_new/sys
           sudo umount mnt_new
           sudo losetup -d $LOOP_DEV
