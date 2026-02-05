@@ -1,4 +1,4 @@
-name: Patch fNOS Image for UTM (Kernel6.1.0-42)
+name: Patch fNOS Image for UTM
 on:
   workflow_dispatch:
 
@@ -7,7 +7,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04-arm64
+    runs-on: ubuntu-latest 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -15,9 +15,8 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          # 删除了 qemu-user-static 和 binfmt-support，原生架构不再需要它们
-          sudo apt-get install -y fdisk xz-utils grep sed tar kmod zstd
-          echo "✅ 依赖库安装完成"
+          sudo apt-get install -y fdisk xz-utils grep sed tar kmod zstd curl
+          echo "✅ 基础工具安装完成"
 
       - name: Get Latest Release Info and Download
         id: get_info
@@ -28,14 +27,14 @@ jobs:
           TAG="fnnas_base_image"
           LATEST_ASSET=$(gh release view "$TAG" -R "$REPO" --json assets \
             -q '.assets[] | select(.name | endswith(".img.xz")) | .name' | \
-            sed -E 's/.*_([0-9]+)\.img\.xz/\1 &/' | \
-            sort -n | tail -n 1 | cut -d' ' -f2-)
+            sort -V | tail -n 1)
           
-          echo "VERSION=$(echo "$LATEST_ASSET" | grep -oP '(?<=_)\d+(?=\.img\.xz)')" >> $GITHUB_ENV
+          VERSION=$(echo "$LATEST_ASSET" | grep -oP '\d+(?=\.img\.xz)')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "SOURCE_FILE=$LATEST_ASSET" >> $GITHUB_ENV
           gh release download "$TAG" -R "$REPO" -p "$LATEST_ASSET" --clobber
 
-      - name: Decompress and Patch Image
+      - name: Decompress and Inject Kernel (Speed Mode)
         run: |
           echo "📦 正在解压新镜像..."
           unxz -v -c "${{ env.SOURCE_FILE }}" > source.img
@@ -43,54 +42,44 @@ jobs:
           sudo losetup -D
           LOOP_DEV=$(sudo losetup -Pf --show source.img)
           
-          echo "💾 正在提取并挂载 Rootfs..."
+          echo "💾 正在提取 Rootfs..."
           mkdir -p mnt_new
           sudo dd if="${LOOP_DEV}p2" of=rootfs.img bs=1M status=none
           sudo mount rootfs.img mnt_new
 
-          # 2. 空间释放
-          sudo rm -rf mnt_new/lib/modules/6.12.41-trim
-
-          # 3. 准备原生 Chroot 环境 (无需拷贝 qemu)
-          echo "🔧 准备 Chroot 环境..."
-          sudo mkdir -p mnt_new/dev mnt_new/proc mnt_new/sys
+          # --- 核心改进：离线注入逻辑 ---
+          echo "🌐 下载官方 Debian ARM64 内核包..."
+          # 使用 Debian 12 稳定的 6.1 系列内核
+          KERNEL_URL="http://ftp.debian.org/debian/pool/main/l/linux/linux-image-6.1.0-28-arm64_6.1.119-1_arm64.deb"
+          curl -LO $KERNEL_URL
           
-          sudo mount --bind /dev mnt_new/dev
-          sudo mount --bind /dev/pts mnt_new/dev/pts # 解决 apt 报错 (posix_openpt)
-          sudo mount --bind /proc mnt_new/proc
-          sudo mount --bind /sys mnt_new/sys
-          sudo cp /etc/resolv.conf mnt_new/etc/resolv.conf
+          echo "🛠️ 正在解压并注入驱动模块..."
+          mkdir -p kextract
+          dpkg-deb -x *.deb kextract/
+          
+          # 注入模块到镜像，提取内核和 initrd 到外部
+          sudo cp -r kextract/lib/modules/* mnt_new/lib/modules/
+          cp kextract/boot/vmlinuz-* ./vmlinuz-standard
+          cp kextract/boot/initrd.img-* ./initrd-standard
+          
+          # 释放空间：移除原镜像中不匹配的驱动目录
+          sudo rm -rf mnt_new/lib/modules/6.12.41-trim
+          # ----------------------------
 
-          # 4. 执行 Chroot 安装标准内核
-          echo "🌐 正在在线安装 Debian 标准内核 (原生架构模式)..."
-          sudo chroot mnt_new /bin/bash -c "
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update
-            apt-get install -y --allow-change-held-packages linux-image-arm64
-            apt-get clean
-          "
-
-          # 5. 提取产物
-          ls -lh mnt_new/boot/
-          cp $(ls mnt_new/boot/vmlinuz-*-arm64 | head -n 1) ./vmlinuz-standard
-          cp $(ls mnt_new/boot/initrd.img-*-arm64 | head -n 1) ./initrd-standard
-
-          # 6. 应用虚拟机适配修正
           echo "🛠️ 应用虚拟机适配修正..."
           sudo sed -i 's/^.*\/boot/#&/' mnt_new/etc/fstab
           sudo sed -i 's/^UUID=[^ ]*/\/dev\/vda/' mnt_new/etc/fstab
           sudo sed -i 's/^\/dev\/mmcblk0p2/\/dev\/vda/' mnt_new/etc/fstab
           
+          # 移除冲突服务
           sudo rm -f mnt_new/etc/systemd/system/multi-user.target.wants/trim_miniscreen.service
           sudo rm -f mnt_new/etc/systemd/system/multi-user.target.wants/trim_wayland.service
 
-          # 7. 彻底清理卸载
           echo "🧹 清理卸载..."
-          sudo umount mnt_new/dev/pts
-          sudo umount mnt_new/dev mnt_new/proc mnt_new/sys
           sudo umount mnt_new
           sudo losetup -d $LOOP_DEV
           rm source.img
+          rm -rf kextract *.deb
           echo "✅ 补丁处理完成"
 
       - name: Final Packaging
@@ -100,12 +89,14 @@ jobs:
           mv rootfs.img vmlinuz-standard initrd-standard "$PKG_DIR/"
           
           cat << EOF > "$PKG_DIR/README.md"
-          # fNOS UTM ARM64 (Standard Kernel)
+          # fNOS UTM ARM64 (Extreme Speed Build)
           
-          1. 磁盘: rootfs.img (VirtIO)
-          2. 内核: vmlinuz-standard
+          1. 磁盘 (Drives): 导入 rootfs.img (接口选 VirtIO)
+          2. 内核 (Kernel): vmlinuz-standard
           3. Initrd: initrd-standard
-          4. 参数: "root=/dev/vda rw console=tty0 console=ttyAMA0 rootwait"
+          4. 启动参数 (Arguments): "root=/dev/vda rw console=tty0 console=ttyAMA0 rootwait"
+          
+          注意：UTM 界面显示的 64GB 存储空间为虚设，请自行添加第二块 VirtIO 磁盘作为数据盘。
           EOF
 
           tar -cvf - "$PKG_DIR" | xz -z -T0 -v > "${PKG_DIR}.tar.xz"
@@ -117,8 +108,8 @@ jobs:
           tag_name: fnnas_utm
           name: fnnas_utm_${{ env.VERSION }}
           body: |
-            fnOS UTM 虚拟机补丁版 
-            本版本使用 GitHub 原生 ARM Runner 构建。
+            fnOS UTM 虚拟机补丁版 (极速注入版)
+            内核版本: Debian 6.1.0-28-arm64
           files: ${{ env.FINAL_PKG_NAME }}
           overwrite_files: true
           make_latest: true
