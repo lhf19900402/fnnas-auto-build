@@ -39,8 +39,12 @@ jobs:
           # ... (前面解压、losetup、mount 的步骤不变) ...
 
           # --- 关键修正：跨架构支持 ---
-          # 1. 拷贝 QEMU 解析器到镜像内 (这步是解决 Exec format error 的核心)
-          sudo cp /usr/bin/qemu-aarch64-static mnt_new/usr/bin/
+          # 1. 确保目录存在并拷贝模拟器 (去掉末尾斜杠，指定完整目标路径)
+          sudo mkdir -p mnt_new/usr/bin
+          sudo cp /usr/bin/qemu-aarch64-static mnt_new/usr/bin/qemu-aarch64-static
+          
+          # 赋予执行权限 (以防万一)
+          sudo chmod +x mnt_new/usr/bin/qemu-aarch64-static
 
           # 2. 准备 chroot 环境
           sudo mount --bind /dev mnt_new/dev
