@@ -92,7 +92,8 @@ jobs:
           
           # 精准替换根目录：同时兼容 UUID= 模式和旧版 /dev/mmcblk 模式
           # 使用 [[:space:]] 确保完美切分 Tab 或空格
-          sudo sed -i 's/^\(UUID=[^[:space:]]*\|/dev/mmcblk[^[:space:]]*\)/\/dev\/vda/' mnt_new/etc/fstab
+          sudo sed -i 's|^.*/boot|#&|' mnt_new/etc/fstab
+          sudo sed -i 's|^\(UUID=[^[:space:]]*\|/dev/mmcblk[^[:space:]]*\)|/dev/vda|' mnt_new/etc/fstab
           
           echo ">>> [修改后] fstab 内容:"
           cat mnt_new/etc/fstab
