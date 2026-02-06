@@ -92,12 +92,11 @@ jobs:
           sudo mount rootfs.img mnt_new
 
           # echo ">>> [修改前] fstab 内容:"
-          # cat mnt_new/etc/fstab
-          # # 修正 fstab：禁用 boot 分区挂载，并将根目录设为 vda
-          # sudo sed -i 's/^.*\/boot/#&/' mnt_new/etc/fstab
-          # sudo sed -i 's/^\/dev\/mmcblk0p2/\/dev\/vda/' mnt_new/etc/fstab
+          cat mnt_new/etc/fstab
+          # 修正 fstab：禁用 boot 分区挂载，并将根目录设为 vda
+          sudo sed -i 's/^.*\/boot/#&/' mnt_new/etc/fstab
           # echo ">>> [修改后] fstab 内容:"
-          # cat mnt_new/etc/fstab
+          cat mnt_new/etc/fstab
           
           # 移除物理硬件冲突服务
           sudo rm -f mnt_new/etc/systemd/system/multi-user.target.wants/trim_miniscreen.service
@@ -125,7 +124,7 @@ jobs:
              请在 QEMU 参数最后一栏填入（包含引号）：
              \`\`\`text
              -append
-             "root=/dev/vdb rw console=tty0 console=ttyAMA0 earlycon"
+             "root=/dev/vda rw console=tty0 console=ttyAMA0 earlycon"
              \`\`\`
           EOF
 
